@@ -15,7 +15,10 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new MongoDBSessionStorage(
     process.env.MONGODB_URI || 'mongodb://localhost:27017/MercuriosIDV',
-    'shopify_sessions'
+    'MercuriosIDV',  // database name
+    {
+      sessionCollectionName: 'shopify_sessions'  // collection name
+    }
   ),
   distribution: AppDistribution.AppStore,
   future: {
