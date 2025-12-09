@@ -1,18 +1,6 @@
-import { PrismaClient } from "@prisma/client";
 import mongoose from "mongoose";
 
-// --- Prisma Setup (for Shopify Session Storage) ---
-const prisma = global.prisma || new PrismaClient();
-
-if (process.env.NODE_ENV !== "production") {
-  if (!global.prisma) {
-    global.prisma = new PrismaClient();
-  }
-}
-
-export default prisma;
-
-// --- Mongoose Setup (for Application Data) ---
+// --- Mongoose Setup (for Application Data & Shopify Sessions) ---
 let mongooseConnection;
 
 export async function connectDB() {
