@@ -229,7 +229,20 @@ export default function Index() {
                   <Text as="h2" variant="headingMd">
                     Customer Synchronization
                   </Text>
-                  <Button onClick={() => setActiveCustomerModal(true)} variant="plain">View All</Button>
+                  <InlineStack gap="200">
+                    <Button
+                      onClick={() => {
+                        fetch('/api/sync-customers', { method: 'POST' })
+                          .then(() => revalidator.revalidate())
+                          .catch(console.error);
+                      }}
+                      tone="success"
+                      loading={revalidator.state === 'loading'}
+                    >
+                      Sync All Customers
+                    </Button>
+                    <Button onClick={() => setActiveCustomerModal(true)} variant="plain">View All</Button>
+                  </InlineStack>
                 </InlineStack>
 
                 <BlockStack gap="200">
