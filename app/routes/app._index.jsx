@@ -14,6 +14,7 @@ import {
   Modal,
   IndexTable,
   useIndexResourceState,
+  Box,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
