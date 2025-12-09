@@ -30,3 +30,6 @@ export async function connectDB() {
     throw error;
   }
 }
+
+// Export an empty default object for backwards compatibility (webhooks import this)
+export default {};
