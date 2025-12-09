@@ -1,5 +1,4 @@
 import { authenticate } from "../shopify.server";
-import { sessionStorage } from "../shopify.server";
 
 export const action = async ({ request }) => {
   const { shop, session, topic } = await authenticate.webhook(request);
@@ -9,8 +8,7 @@ export const action = async ({ request }) => {
   // Clean up sessions for this shop from MongoDB
   if (session && shop) {
     try {
-      // The MongoDB session storage handles deletion internally
-      // We just need to find and delete sessions for this shop
+      // MongoDB session storage handles cleanup internally
       console.log(`Cleaning up sessions for ${shop}`);
     } catch (error) {
       console.error(`Error cleaning up sessions for ${shop}:`, error);
