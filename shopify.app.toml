@@ -2,7 +2,7 @@
 
 client_id = "74289b85e3512cc12a7f23dab1af895d"
 name = "MercuriosAiHyperlinked"
-application_url = "https://example.com"
+application_url = "https://mercurios-connect-app.onrender.com"
 embedded = true
 
 [build]
@@ -29,4 +29,8 @@ api_version = "2026-01"
 scopes = "write_products,read_orders,read_customers,write_customers"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [
+  "https://mercurios-connect-app.onrender.com/auth/callback",
+  "https://mercurios-connect-app.onrender.com/auth/shopify/callback",
+  "https://mercurios-connect-app.onrender.com/api/auth/callback"
+]
