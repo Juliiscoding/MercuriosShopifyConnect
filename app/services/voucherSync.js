@@ -56,12 +56,10 @@ async function createProHandelVoucher(amount, orderRef) {
 /**
  * Core Logic: Handle incoming Shopify Order
  */
-export async function processOrder(order) {
+export async function processOrder(order, admin) {
     if (!order.line_items) return;
 
     // Filter for Voucher items
-    // Logic: SKU starts with 'GUTSCHEIN' or Product Type is 'Gift Card'
-    // Note: If Shopify handles Gift Cards natively (digital), the item name might differ.
     const voucherItems = order.line_items.filter(item =>
         (item.sku && item.sku.toUpperCase().startsWith('GUTSCHEIN')) ||
         (item.name && item.name.toLowerCase().includes('gutschein')) ||
@@ -73,7 +71,7 @@ export async function processOrder(order) {
     console.log(`🎟 Found ${voucherItems.length} voucher items in Order ${order.name}`);
 
     for (const item of voucherItems) {
-        // Idempotency: Check if we already created a voucher for this line item
+        // Idempotency check
         const existing = await Voucher.findOne({
             shopifyOrderId: order.id.toString(),
             'metadata.lineItemId': item.id.toString()
@@ -85,28 +83,42 @@ export async function processOrder(order) {
         }
 
         const amount = parseFloat(item.price);
-        if (isNaN(amount) || amount <= 0) {
-            console.warn(`⚠️ Invalid amount for voucher item ${item.title}`);
-            continue;
-        }
+        if (isNaN(amount) || amount <= 0) continue;
 
         try {
-            // 1. Create in Pro Handel (The Master Record)
+            // 1. Create in Pro Handel
             const phVoucher = await createProHandelVoucher(amount, order.name);
 
-            const phNumber = phVoucher.number; // e.g. 105021
+            const phNumber = phVoucher.number;
             const phUuid = phVoucher.id;
-            const phInternetCode = phVoucher.internetCode; // The alphanumeric logic
+            const phInternetCode = phVoucher.internetCode;
 
             console.log(`✅ Created ProHandel Voucher #${phNumber} (${phUuid}) Code: ${phInternetCode}`);
 
-            // 2. Sync logic (Create mapped record in our DB)
             // UNIFIED FORMAT: Use internetCode if valid, otherwise number
             const unifiedCode = phInternetCode && phInternetCode.length > 3 ? phInternetCode : phNumber.toString();
+
+            // 2. Create Native Shopify Gift Card (if admin context available)
+            let shopifyGiftCardId = null;
+            if (admin) {
+                try {
+                    const giftCard = new admin.rest.resources.GiftCard({ session: admin.session });
+                    giftCard.code = unifiedCode;
+                    giftCard.initial_value = amount;
+                    giftCard.note = `ProHandel Sync: ${phNumber}`;
+                    await giftCard.save({ update: true });
+                    shopifyGiftCardId = giftCard.id;
+                    console.log(`✅ Created Native Shopify Gift Card ID: ${shopifyGiftCardId}`);
+                } catch (gcErr) {
+                    console.error("⚠️ Failed to create Shopify Gift Card:", gcErr.message);
+                    // Continue to save DB record anyway
+                }
+            }
 
             const newVoucher = new Voucher({
                 shopifyCode: unifiedCode,
                 shopifyOrderId: order.id.toString(),
+                shopifyGiftCardId: shopifyGiftCardId ? shopifyGiftCardId.toString() : undefined,
                 proHandelNumber: phNumber,
                 proHandelUuid: phUuid,
                 value: amount,
@@ -129,12 +141,95 @@ export async function processOrder(order) {
             await newVoucher.save();
             console.log(`💾 Saved Voucher Mapping: PH #${phNumber} <-> Shopify Order ${order.name}`);
 
-            // TODO: Send Email with Code `phNumber` to `order.email`
-            // await sendVoucherEmail(order.email, phNumber, amount);
-
         } catch (err) {
             console.error(`❌ Failed to process voucher for item ${item.title}:`, err.message);
-            // TODO: Add to retry queue
         }
+    }
+}
+
+/**
+ * Redeem a Voucher in Pro Handel system
+ */
+async function redeemProHandelVoucher(voucherUuid, amount, orderName) {
+    const headers = await getProHandelHeaders();
+
+    // POST /api/v2/voucher/redeem/{voucherId}
+    const payload = {
+        branchNumber: 1, // Default online branch
+        amount: amount,
+        note: `Redeemed in Shopify Order: ${orderName}`
+        // Optional: customerNumber, etc.
+    };
+
+    console.log(`💸 Redeeming ProHandel Voucher ${voucherUuid} for ${amount} EUR...`);
+    try {
+        const response = await axios.post(`${PROHANDEL_CONFIG.apiUrl}/voucher/redeem/${voucherUuid}`, payload, { headers });
+        return response.data;
+    } catch (err) {
+        console.error(`❌ ProHandel Redemption Failed: ${err.message}`);
+        // If 400, maybe already redeemed?
+        if (err.response) console.error(err.response.data);
+        throw err;
+    }
+}
+
+/**
+ * Handle Gift Card Usage (Redemption) in Shopify
+ */
+export async function processRedemptions(order, admin) {
+    // 1. Check if Gift Card was used
+    const paymentGateways = order.payment_gateway_names || [];
+    if (!paymentGateways.includes('gift_card')) return;
+
+    if (!admin) {
+        console.error("⚠️ Cannot process redemptions without Admin context to fetch transactions.");
+        return;
+    }
+
+    console.log(`📉 Processing Redemptions for Order ${order.name}`);
+
+    try {
+        // 2. Fetch Transactions to identify the Gift Card
+        // We need transactions to get the gift_card_id
+        const transactions = await admin.rest.resources.Transaction.all({
+            order_id: order.id,
+            session: admin.session
+        });
+
+        for (const tx of transactions.data) {
+            if (tx.gateway === 'gift_card' && tx.status === 'success' && tx.receipt && tx.receipt.gift_card_id) {
+                const shopifyGiftCardId = tx.receipt.gift_card_id.toString();
+                const amount = parseFloat(tx.amount);
+
+                // 3. Find Linked Voucher
+                const voucher = await Voucher.findOne({ shopifyGiftCardId: shopifyGiftCardId });
+
+                if (voucher) {
+                    // 4. Redeem in ProHandel
+                    // Idempotency: Link this redemption to this order? 
+                    // ProHandel allows partial redemptions.
+
+                    try {
+                        await redeemProHandelVoucher(voucher.proHandelUuid, amount, order.name);
+
+                        voucher.redeemedAmount = (voucher.redeemedAmount || 0) + amount;
+                        if (voucher.redeemedAmount >= voucher.value) {
+                            voucher.status = 'redeemed';
+                        } else {
+                            voucher.status = 'partial';
+                        }
+                        await voucher.save();
+                        console.log(`✅ Synced Redemption: Descreased PH Voucher ${voucher.proHandelNumber} by ${amount}`);
+                    } catch (phErr) {
+                        console.error("Failed to sync redemption to ProHandel:", phErr.message);
+                    }
+                } else {
+                    console.log(`⚠️ Shopify Gift Card ${shopifyGiftCardId} used, but not found in our DB. Skipping PH sync.`);
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error("Error processing redemptions:", error);
     }
 }

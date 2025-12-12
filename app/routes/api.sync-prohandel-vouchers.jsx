@@ -47,22 +47,19 @@ export const action = async ({ request }) => {
     try {
         const headers = await getProHandelHeaders();
 
-        // 1. Get Changed Vouchers (Time window: Last 24h or since last sync)
-        // For simplicity, let's look at last 2 hours
+        // 1. Get Changed Vouchers (Issuance Sync)
         const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-
         console.log(`📡 Fetching ProHandel vouchers changed since ${since}`);
 
-        // Use 'changed' endpoint
         const phRes = await axios.get(`${PROHANDEL_CONFIG.apiUrl}/voucher/changed/${since}`, { headers });
         const changedVouchers = phRes.data;
 
         let syncedCount = 0;
+        let redeemedCount = 0;
 
         for (const phV of changedVouchers) {
             const code = phV.internetCode || phV.number.toString();
 
-            // Check if exists
             const existing = await Voucher.findOne({
                 $or: [
                     { proHandelUuid: phV.id },
@@ -73,10 +70,24 @@ export const action = async ({ request }) => {
             if (!existing) {
                 console.log(`✨ New ProHandel Voucher found: ${code} (${phV.value} EUR)`);
 
-                // Create in MongoDB
+                let shopifyGiftCardId = null;
+                if (admin) {
+                    try {
+                        const giftCard = new admin.rest.resources.GiftCard({ session: admin.session });
+                        giftCard.code = code;
+                        giftCard.initial_value = phV.value;
+                        giftCard.note = `ProHandel Import: ${phV.number}`;
+                        await giftCard.save({ update: true });
+                        shopifyGiftCardId = giftCard.id;
+                        console.log(`✅ Created Native Shopify Gift Card ID: ${shopifyGiftCardId}`);
+                    } catch (gcErr) {
+                        console.error("⚠️ Failed to create Shopify Gift Card (Import):", gcErr.message);
+                    }
+                }
+
                 const newUsage = new Voucher({
                     shopifyCode: code,
-                    // No shopifyOrderId as it comes from POS/Offline
+                    shopifyGiftCardId: shopifyGiftCardId ? shopifyGiftCardId.toString() : undefined,
                     proHandelNumber: phV.number,
                     proHandelUuid: phV.id,
                     value: phV.value,
@@ -86,18 +97,44 @@ export const action = async ({ request }) => {
                     source: 'prohandel_import'
                 });
                 await newUsage.save();
-
-                // TODO: Create Shopify Discount Code or Gift Card here
-                // admin.rest.post... or admin.graphql...
-
                 syncedCount++;
             } else {
                 // Update status if needed (Redemption sync)
-                // TODO
+                // This part is now handled by the separate redemption sync below
             }
         }
 
-        return json({ success: true, count: changedVouchers.length, synced: syncedCount });
+        // 2. Get Redeemed Vouchers (Redemption Sync)
+        console.log(`📡 Fetching ProHandel redeemed vouchers since ${since}`);
+        const redeemedRes = await axios.get(`${PROHANDEL_CONFIG.apiUrl}/voucher/redemption/changed/${since}`, { headers });
+        const redeemedVouchers = redeemedRes.data;
+
+        for (const redV of redeemedVouchers) {
+            const voucher = await Voucher.findOne({ proHandelUuid: redV.id });
+
+            if (voucher && voucher.status !== 'redeemed') {
+                console.log(`🔄 Syncing Redemption for Voucher ${voucher.shopifyCode}`);
+
+                voucher.status = 'redeemed';
+                voucher.redeemedAt = new Date(redV.voucherRedemptionDate || Date.now());
+                await voucher.save();
+
+                // Disable in Shopify
+                if (admin && voucher.shopifyGiftCardId) {
+                    try {
+                        const giftCard = new admin.rest.resources.GiftCard({ session: admin.session });
+                        giftCard.id = voucher.shopifyGiftCardId;
+                        await giftCard.disable();
+                        console.log(`🚫 Disabled Shopify Gift Card ${voucher.shopifyGiftCardId}`);
+                    } catch (err) {
+                        console.error(`⚠️ Failed to disable Shopify Gift Card ${voucher.shopifyGiftCardId}:`, err.message);
+                    }
+                }
+                redeemedCount++;
+            }
+        }
+
+        return json({ success: true, synced: syncedCount, redeemed: redeemedCount });
 
     } catch (error) {
         console.error("❌ Sync Error:", error.message);
