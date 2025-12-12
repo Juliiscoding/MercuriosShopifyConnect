@@ -96,19 +96,16 @@ export async function processOrder(order) {
 
             const phNumber = phVoucher.number; // e.g. 105021
             const phUuid = phVoucher.id;
+            const phInternetCode = phVoucher.internetCode; // The alphanumeric logic
 
-            console.log(`✅ Created ProHandel Voucher #${phNumber} (${phUuid})`);
+            console.log(`✅ Created ProHandel Voucher #${phNumber} (${phUuid}) Code: ${phInternetCode}`);
 
             // 2. Sync logic (Create mapped record in our DB)
-            // The 'shopifyCode' is key. We DECIDE to use the Pro Handel Number as the code.
-            // If Shopify generated a code (native Gift Card), we might have to store that instead.
-            // BUT for "normal product as voucher" flow, we define the code.
-
-            // Attempt to Create matching Shopify Gift Card (If API scope allows) - NOT IMPLEMENTED HERE
-            // For now, we assume we just send the code to the customer.
+            // UNIFIED FORMAT: Use internetCode if valid, otherwise number
+            const unifiedCode = phInternetCode && phInternetCode.length > 3 ? phInternetCode : phNumber.toString();
 
             const newVoucher = new Voucher({
-                shopifyCode: phNumber.toString(), // UNIFIED NUMBER STRATEGY
+                shopifyCode: unifiedCode,
                 shopifyOrderId: order.id.toString(),
                 proHandelNumber: phNumber,
                 proHandelUuid: phUuid,
